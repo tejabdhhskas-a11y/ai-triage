@@ -1,13 +1,18 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import axios from "axios";
+import { supabase } from "./supabase";
+import Auth from "./Auth";
 
 export default function App() {
+  const [user, setUser] = useState(null);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [riskScore, setRiskScore] = useState(null);
   const [riskLevel, setRiskLevel] = useState(null);
   const [reason, setReason] = useState(null);
+  const [pastChats, setPastChats] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
 
   const levelColors = {
     home: "#22c55e",
@@ -21,9 +26,38 @@ export default function App() {
     emergency: "🚨 Go to Emergency Room NOW",
   };
 
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) {
+        setUser(session.user);
+        loadPastChats(session.user.id);
+      }
+    });
+  }, []);
+
+  const loadPastChats = async (userId) => {
+    const { data } = await supabase
+      .from("chat_sessions")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(10);
+    if (data) setPastChats(data);
+  };
+
+  const saveChat = async () => {
+    if (!user || messages.length === 0) return;
+    await supabase.from("chat_sessions").insert({
+      user_id: user.id,
+      messages: messages,
+      risk_score: riskScore,
+      risk_level: riskLevel,
+    });
+    loadPastChats(user.id);
+  };
+
   const sendMessage = async () => {
     if (!input.trim()) return;
-
     const newMessages = [...messages, { role: "user", content: input }];
     setMessages(newMessages);
     setInput("");
@@ -31,12 +65,10 @@ export default function App() {
 
     try {
       const res = await axios.post("https://ai-triage-zwo3.onrender.com/triage", {
-
         messages: newMessages,
       });
 
       const reply = res.data.reply;
-
       const jsonMatch = reply.match(/\{.*"risk_score".*\}/s);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
@@ -46,29 +78,44 @@ export default function App() {
       }
 
       const cleanReply = reply.replace(/\{.*"risk_score".*\}/s, "").trim();
-
-      setMessages([...newMessages, { role: "assistant", content: cleanReply }]);
+      const updatedMessages = [...newMessages, { role: "assistant", content: cleanReply }];
+      setMessages(updatedMessages);
     } catch (err) {
-      setMessages([
-        ...newMessages,
-        { role: "assistant", content: "Error connecting to backend. Make sure it is running." },
-      ]);
+      setMessages([...newMessages, { role: "assistant", content: "Error connecting to backend." }]);
     }
-
     setLoading(false);
+  };
+
+  const handleLogout = async () => {
+    await saveChat();
+    await supabase.auth.signOut();
+    setUser(null);
+    setMessages([]);
+    setRiskScore(null);
+    setRiskLevel(null);
+    setPastChats([]);
+  };
+
+  const loadChat = (chat) => {
+    setMessages(chat.messages);
+    setRiskScore(chat.risk_score);
+    setRiskLevel(chat.risk_level);
+    setShowHistory(false);
   };
 
   const handleKey = (e) => {
     if (e.key === "Enter") sendMessage();
   };
 
+  if (!user) return <Auth onLogin={(u) => { setUser(u); loadPastChats(u.id); }} />;
+
   return (
     <div style={{ display: "flex", height: "100vh", fontFamily: "sans-serif", background: "#0f172a", color: "white" }}>
-      
+
       {/* Sidebar */}
       <div style={{ width: "280px", background: "#1e293b", padding: "24px", display: "flex", flexDirection: "column", gap: "16px" }}>
         <h2 style={{ margin: 0, color: "#38bdf8" }}>🏥 AI Triage</h2>
-        <p style={{ color: "#94a3b8", fontSize: "14px" }}>Describe your symptoms and get instant guidance.</p>
+        <p style={{ color: "#94a3b8", fontSize: "12px", margin: 0 }}>{user.email}</p>
 
         {riskScore !== null && (
           <div style={{ background: "#0f172a", borderRadius: "12px", padding: "16px" }}>
@@ -83,21 +130,50 @@ export default function App() {
           </div>
         )}
 
-        <div style={{ marginTop: "auto", fontSize: "11px", color: "#475569" }}>
-          ⚠️ This is not a substitute for professional medical advice. Always consult a doctor.
+        <button onClick={() => setShowHistory(!showHistory)} style={{
+          padding: "10px", borderRadius: "8px", border: "none",
+          background: "#334155", color: "white", cursor: "pointer", fontSize: "13px"
+        }}>
+          {showHistory ? "Hide History" : "📋 Past Chats"}
+        </button>
+
+        {showHistory && pastChats.map((chat, i) => (
+          <div key={i} onClick={() => loadChat(chat)} style={{
+            padding: "10px", background: "#0f172a", borderRadius: "8px",
+            cursor: "pointer", fontSize: "12px", color: "#94a3b8"
+          }}>
+            <div style={{ color: levelColors[chat.risk_level] }}>Score: {chat.risk_score}</div>
+            <div>{new Date(chat.created_at).toLocaleDateString()}</div>
+          </div>
+        ))}
+
+        <button onClick={() => { setMessages([]); setRiskScore(null); setRiskLevel(null); }} style={{
+          padding: "10px", borderRadius: "8px", border: "none",
+          background: "#334155", color: "white", cursor: "pointer", fontSize: "13px"
+        }}>
+          + New Chat
+        </button>
+
+        <button onClick={handleLogout} style={{
+          marginTop: "auto", padding: "10px", borderRadius: "8px", border: "none",
+          background: "#ef444422", color: "#ef4444", cursor: "pointer", fontSize: "13px"
+        }}>
+          Logout
+        </button>
+
+        <div style={{ fontSize: "11px", color: "#475569" }}>
+          ⚠️ Not a substitute for professional medical advice.
         </div>
       </div>
 
       {/* Chat Area */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-        
-        {/* Messages */}
         <div style={{ flex: 1, overflowY: "auto", padding: "24px", display: "flex", flexDirection: "column", gap: "12px" }}>
           {messages.length === 0 && (
             <div style={{ textAlign: "center", color: "#475569", marginTop: "80px" }}>
               <div style={{ fontSize: "48px" }}>🩺</div>
-              <h3>Hello! I'm your AI Triage Assistant</h3>
-              <p>Tell me what symptoms you're experiencing and I'll help assess your condition.</p>
+              <h3>Hello, {user.email.split("@")[0]}!</h3>
+              <p>Tell me what symptoms you're experiencing.</p>
             </div>
           )}
 
@@ -107,11 +183,8 @@ export default function App() {
               maxWidth: "70%",
               background: msg.role === "user" ? "#38bdf8" : "#1e293b",
               color: msg.role === "user" ? "#0f172a" : "white",
-              padding: "12px 16px",
-              borderRadius: "12px",
-              fontSize: "14px",
-              lineHeight: "1.6",
-              whiteSpace: "pre-wrap"
+              padding: "12px 16px", borderRadius: "12px",
+              fontSize: "14px", lineHeight: "1.6", whiteSpace: "pre-wrap"
             }}>
               {msg.content}
             </div>
@@ -124,7 +197,6 @@ export default function App() {
           )}
         </div>
 
-        {/* Input */}
         <div style={{ padding: "16px", background: "#1e293b", display: "flex", gap: "12px" }}>
           <input
             value={input}
@@ -137,15 +209,17 @@ export default function App() {
               color: "white", fontSize: "14px", outline: "none"
             }}
           />
-          <button
-            onClick={sendMessage}
-            disabled={loading}
-            style={{
-              padding: "12px 24px", borderRadius: "8px", border: "none",
-              background: loading ? "#334155" : "#38bdf8",
-              color: "#0f172a", fontWeight: "bold", cursor: loading ? "not-allowed" : "pointer"
-            }}
-          >
+          <button onClick={saveChat} style={{
+            padding: "12px 16px", borderRadius: "8px", border: "none",
+            background: "#334155", color: "white", cursor: "pointer", fontSize: "13px"
+          }}>
+            💾 Save
+          </button>
+          <button onClick={sendMessage} disabled={loading} style={{
+            padding: "12px 24px", borderRadius: "8px", border: "none",
+            background: loading ? "#334155" : "#38bdf8",
+            color: "#0f172a", fontWeight: "bold", cursor: loading ? "not-allowed" : "pointer"
+          }}>
             Send
           </button>
         </div>
