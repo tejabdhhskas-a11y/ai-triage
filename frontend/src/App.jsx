@@ -30,7 +30,8 @@ export default function App() {
     setLoading(true);
 
     try {
-      const res = await axios.post("/api/triage", {
+      const res = await axios.post("https://ai-triage-zwo3.onrender.com/triage", {
+
         messages: newMessages,
       });
 
